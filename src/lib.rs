@@ -38,23 +38,43 @@ impl AtomicFile {
         atomic_file.init_with_chunk_count(chunk_count)
     }
 
-    pub fn new_with_check_file_for_chunks(file: File) -> AtomicFile {
+    pub fn new_with_check_file_for_chunks(file: File) -> Option<AtomicFile> {
         let atomic_file = AtomicFile::new(file);
         let chunk_count = atomic_file.get_fs_chunk_count();
-        atomic_file.init_with_chunk_count(chunk_count)
+        match chunk_count {
+            None => None,
+            Some(count) => Some(atomic_file.init_with_chunk_count(count)),
+        }
     }
     pub fn get_chunk_size(&self, chunk_count: u64) -> u64 {
         let file = self.source.lock().unwrap();
         let file_size = file.metadata().unwrap().len();
         (file_size as u64) / chunk_count
     }
-    pub fn get_fs_chunk_count(&self) -> usize {
+    fn get_fs_meta(&self) -> Option<AtomicFileMetaData> {
+        let raw_file_size = self.get_file_size_without_meta_data();
+        let mut file = self.source.lock().unwrap();
+        if file.metadata().unwrap().len() - 8 == 0 {
+            return None;
+        }
+        file.seek(SeekFrom::Start(raw_file_size)).unwrap();
+        let mut buf: Vec<u8> = Vec::new();
+        file.read_to_end(&mut buf).unwrap();
+        let meta_data = AtomicFileMetaData::decode(&buf.as_mut_slice());
+        Some(meta_data)
+    }
+    pub fn get_fs_chunk_count(&self) -> Option<usize> {
         let mut chunk_count = 0;
-        // todo check the filter for a pattern where there there is  [111010101010100111000000 ,
-        // 111010101010100111000000,111010101010100111000000 ];
-        // very height cost
-        // let file = self.source.lock().unwrap();
-        chunk_count
+        match &*self.meta_data {
+            None => {
+                if let Some(meta_data) = self.get_fs_meta() {
+                    return Some(meta_data.chunks_count);
+                }
+                return None;
+            }
+            Some(meta_data) => chunk_count = meta_data.chunks_count,
+        }
+        Some(chunk_count)
     }
     pub fn get_writen_chunks(&self, chunks_count: usize) -> Option<Vec<ChunkWriter>> {
         let chunk_size = self.get_chunk_size(chunks_count as u64);
@@ -62,8 +82,6 @@ impl AtomicFile {
         for chunk_index in 0..chunks_count {
             let chunk_index = chunk_index as u64;
             let offset: u64 = chunk_index * chunk_size;
-            let next_offset: u64 = chunk_index * chunk_size;
-            // todo find none zero bites between the offset and the next offset
             let bytes_written_in_chunk: u64 = 0;
             let offset = offset + bytes_written_in_chunk;
             chunks.push(self.get_chunk_writer(offset));
@@ -117,13 +135,16 @@ impl AtomicFile {
             }
             Some(meta_data) => meta_data.encode(),
         };
-        file.write_all(encoded.as_slice()).unwrap()
+        file.write_all(encoded.as_slice()).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
     }
     fn init_with_chunk_count(mut self, chunk_count: usize) -> AtomicFile {
         if let Some(chunks) = self.get_writen_chunks(chunk_count) {
             self.chunks = Arc::new(chunks);
+            self.set_meta_data();
             return self;
         }
+        self.set_meta_data();
         self
     }
 }
