@@ -1,5 +1,6 @@
+#![feature(core_intrinsics)]
+
 use std::fs::File;
-use std::intrinsics::roundf64;
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex};
 
@@ -19,26 +20,28 @@ impl Clone for AtomicFile {
 
 impl AtomicFile {
     pub fn new(file: File) -> AtomicFile {
-        ِAtomicFile {
+        AtomicFile {
             source: Arc::new(Mutex::new(file)),
-            chunks: Vec![],
+            chunks: Arc::new(vec![]),
         }
     }
     pub fn new_with_known_chunk_count(file: File, chunk_count: usize) -> AtomicFile {
-        AtomicFile::init_with_chunk_count(file, chunk_count)
+        let atomic_file = AtomicFile::new(file);
+        atomic_file.init_with_chunk_count(chunk_count)
     }
 
     pub fn new_with_check_file_for_chunks(file: File) -> AtomicFile {
+        let atomic_file = AtomicFile::new(file);
         let chunk_count = atomic_file.get_fs_chunk_count();
-        AtomicFile::new_with_known_chunk_count(file, chunk_count)
+        atomic_file.init_with_chunk_count(chunk_count)
     }
     pub fn get_chunk_size(&self, chunk_count: usize) -> f64 {
         let file = self.source.lock().unwrap();
         let file_size = file.metadata().unwrap().len();
-        let chunk_size = round64(file_size / chunk_count as u64);
+        let chunk_size = file_size as f64 / chunk_count as f64;
         chunk_size
     }
-    pub fn get_fs_chunk_count(self) -> usize {
+    pub fn get_fs_chunk_count(&self) -> usize {
         // todo check the filter for a pattern where there there is  [111010101010100111000000 ,
         // 111010101010100111000000,111010101010100111000000 ];
         // very height cost
@@ -47,7 +50,7 @@ impl AtomicFile {
     pub fn get_writen_chunks(&self, chunks_count: usize) -> Option<Vec<ChunkWriter>> {
         let chunk_size = self.get_chunk_size(chunks_count);
         let mut chunks = Vec::with_capacity(chunks_count);
-        for chunk_offset in n..chunks_count {
+        for chunk_offset in 0..chunks_count {
             let offset = chunk_offset as u64 * chunk_size as u64;
             let next_offset = chunk_offset as u64 * chunk_size as u64;
             // todo find none zero bites between the offset and the next offset
@@ -61,25 +64,23 @@ impl AtomicFile {
         let mut file = self.source.lock().unwrap();
         file.seek(SeekFrom::Start(offset))
             .expect("Error seeking the file");
-        file.write_all(buf)
-            .unwrap() // todo handle the error
+        file.write_all(buf).unwrap() // todo handle the error
     }
-    pub fn get_chunk_writer(&self, offset: u64) -> ChunkWriter {
+
+    // private
+    fn get_chunk_writer(&self, offset: u64) -> ChunkWriter {
         ChunkWriter {
             file: self.clone(),
             offset,
         }
     }
 
-
-    fn init_with_chunk_count(file: File, chunk_count: usize) -> AtomicFile {
-        let mut atomic_file = AtomicFile::new(file);
-
-        if let some(chunks) = atomic_file.get_writen_chunks(chunk_count) {
-            atomic_file.chunks = chunks;
-            return atomic_file;
+    fn init_with_chunk_count(mut self, chunk_count: usize) -> AtomicFile {
+        if let Some(chunks) = self.get_writen_chunks(chunk_count) {
+            self.chunks = Arc::new(chunks);
+            return self;
         }
-        atomic_file
+        self
     }
 }
 
@@ -93,7 +94,6 @@ impl ChunkWriter {
         self.file.write(self.offset + done_offset, buf)
     }
 }
-
 
 #[cfg(test)]
 mod tests {
