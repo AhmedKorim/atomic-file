@@ -1,12 +1,16 @@
+use std::fmt;
+
 use bincode;
 use serde::export::Formatter;
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::collections::HashMap;
+use std::sync::RwLock;
 
-#[derive(Serialize, Deserialize, PartialEq, Copy)]
+#[derive(Serialize, Deserialize)]
 pub struct AtomicFileMetaData {
     pub chunks_count: usize,
     pub chunk_size: u64,
+    pub offsets: HashMap<usize, u64>,
 }
 
 impl AtomicFileMetaData {
@@ -14,7 +18,11 @@ impl AtomicFileMetaData {
         AtomicFileMetaData {
             chunks_count,
             chunk_size,
+            offsets: HashMap::new(),
         }
+    }
+    pub fn set_progress(&mut self, key: usize, offset: u64) {
+        self.offsets.insert(key, offset);
     }
 
     pub fn encode(&self) -> Vec<u8> {

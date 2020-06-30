@@ -1,9 +1,11 @@
+use std::borrow::Borrow;
 use std::cmp::{max, min};
 use std::fmt;
 use std::fs::{create_dir, File, Metadata};
 use std::i8::MAX;
 use std::io::{Bytes, Cursor, Read, Seek, SeekFrom, Write};
-use std::sync::{Arc, Mutex};
+use std::ops::Deref;
+use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +25,7 @@ pub struct AtomicFile {
     pub source: Arc<Mutex<File>>,
     pub chunks: Arc<Vec<ChunkWriter>>,
     // todo remove this
-    pub meta_data: Arc<Option<AtomicFileMetaData>>,
+    pub meta_data: Arc<RwLock<Option<AtomicFileMetaData>>>,
 }
 
 impl Clone for AtomicFile {
@@ -41,34 +43,37 @@ impl AtomicFile {
         AtomicFile {
             source: Arc::new(Mutex::new(file)),
             chunks: Arc::new(vec![]),
-            meta_data: Arc::new(None),
+            meta_data: Arc::new(RwLock::new(None)),
         }
     }
     pub fn get_chunk_size(size: u64, chunks_count: usize) -> u64 {
         size / (chunks_count as u64)
     }
     fn init_chunks(&mut self) {
-        if let Some(meta_data) = &*self.meta_data {
-            let chunk_count = meta_data.chunks_count;
+        if let Some(meta) = &*self.meta_data.read().unwrap() {
+            let chunk_count = meta.chunks_count;
             let mut chunks = Vec::with_capacity(chunk_count);
             for chunk_index in 0..chunk_count {
-                chunks.push(self.get_chunk_writer(meta_data.chunk_size * chunk_index as u64));
+                chunks
+                    .push(self.get_chunk_writer(meta.chunk_size * chunk_index as u64, chunk_index));
             }
 
             self.chunks = Arc::new(chunks);
         }
     }
-    fn get_chunk_writer(&self, offset: u64) -> ChunkWriter {
+    fn get_chunk_writer(&self, offset: u64, key: usize) -> ChunkWriter {
         ChunkWriter {
             file: self.clone(),
             offset,
+            key,
         }
     }
     fn get_chunk_writer_with_index(&self, index: usize) -> ChunkWriter {
-        let meta_data = self.meta_data.unwrap();
+        let meta = self.meta_data.read().unwrap().unwrap();
         ChunkWriter {
             file: self.clone(),
-            offset: meta_data.chunk_size * (index as u64),
+            offset: meta.chunk_size * (index as u64),
+            key: index,
         }
     }
     pub fn get_meta_data_from_file(&self) -> AtomicFileMetaData {
@@ -93,7 +98,7 @@ impl AtomicFile {
     pub fn new_with_excited_file(file: File) -> AtomicFile {
         let mut atomic_file = AtomicFile::new(file);
         let meta_data = atomic_file.get_meta_data_from_file();
-        atomic_file.meta_data = Arc::new(Some(meta_data));
+        atomic_file.meta_data = Arc::new(RwLock::new(Some(meta_data)));
         atomic_file.init_chunks();
         atomic_file
     }
@@ -102,21 +107,35 @@ impl AtomicFile {
         let meta_data = AtomicFileMetaData::new(chunk_size, chunks_count);
         let encoded_meta_data = meta_data.encode();
         let final_size = encoded_meta_data.len() as u64 + size;
-        let mut preload = vec![0u8; 2048];
+        let mut preload = vec![0u8; size as usize];
         preload = [preload, encoded_meta_data].concat();
         file.set_len(final_size).unwrap();
         file.write_all(&preload).unwrap();
         let mut atomic_file = AtomicFile::new(file);
-        atomic_file.meta_data = Arc::new(Some(meta_data));
+        atomic_file.meta_data = Arc::new(RwLock::new(Some(meta_data)));
         atomic_file.init_chunks();
         atomic_file
     }
-    pub fn write(&mut self, offset: u64, buf: &[u8]) {
+
+    pub fn write(&mut self, offset: u64, buf: &[u8], chunk_index: usize, next_offset: u64) {
         let mut file = self.source.lock().unwrap();
-        dbg!(offset);
         file.seek(SeekFrom::Start(offset))
             .expect("Error seeking the file");
         file.write_all(buf).expect("Failed to write file");
+
+        {
+            if let Some(meta_data) = &mut *self.meta_data.get_mut().unwrap() {
+                file.seek(SeekFrom::Start(
+                    file.metadata().unwrap().len() - meta_data.encode().len() as u64,
+                ))
+                .unwrap();
+                meta_data.set_progress(chunk_index, next_offset);
+            }
+        }
+
+        let meta_data_encoded = self.meta_data.read().unwrap().map(|f| f.encode()).unwrap();
+
+        file.write_all(&meta_data_encoded);
     }
 }
 
@@ -155,9 +174,8 @@ mod tests {
 
             let mut atomic_file = AtomicFile::new_with_size(file, 2048, 8);
             let mut chunks = vec![vec!(0u8; 2048 / 8); 8];
-            for (index, chunk) in chunks.iter_mut().enumerate() {
-                let mut writer = atomic_file.get_chunk_writer_with_index(index);
-                writer.write(chunk.len() as u64, &chunk)
+            for (index, writer) in atomic_file.chunks.iter_mut().enumerate() {
+                writer.write(chunks.len() as u64, &chunks[index])
             }
             let file = atomic_file.source.lock().unwrap();
             let meta_data_length = atomic_file.meta_data.unwrap().encode().len();
