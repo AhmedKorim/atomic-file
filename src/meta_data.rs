@@ -1,5 +1,6 @@
 use std::fmt;
 
+use crate::errors::Error;
 use bincode;
 use serde::export::Formatter;
 use serde::{Deserialize, Serialize};
@@ -25,15 +26,14 @@ impl AtomicFileMetaData {
         self.offsets.insert(key, offset);
     }
 
-    pub fn encode(&self) -> Vec<u8> {
-        let encoded: Vec<u8> = bincode::serialize(&self).unwrap();
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let encoded: Vec<u8> = bincode::serialize(&self)?;
         let data_length = encoded.len() as u64;
-        [encoded, data_length.to_be_bytes().into()].concat()
+        Ok([encoded, data_length.to_be_bytes().into()].concat())
     }
-    pub(crate) fn decode(encoded_val: &[u8]) -> AtomicFileMetaData {
-        let val: AtomicFileMetaData =
-            bincode::deserialize(&encoded_val[0..encoded_val.len() - 8]).unwrap();
-        val
+    pub(crate) fn decode(encoded_val: &[u8]) -> Result<AtomicFileMetaData, Error> {
+        let val: AtomicFileMetaData = bincode::deserialize(&encoded_val[0..encoded_val.len() - 8])?;
+        Ok(val)
     }
 }
 
