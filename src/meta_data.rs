@@ -1,11 +1,12 @@
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::RwLock;
 
-use crate::errors::Error;
 use bincode;
 use serde::export::Formatter;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::RwLock;
+
+use crate::errors::Error;
 
 #[derive(Serialize, Deserialize)]
 pub struct AtomicFileMetaData {
@@ -16,16 +17,23 @@ pub struct AtomicFileMetaData {
 
 impl AtomicFileMetaData {
     pub fn new(chunk_size: u64, chunks_count: usize) -> AtomicFileMetaData {
+        let v: Vec<u64> = (0..chunks_count).map(|i| i as u64 * chunk_size).collect();
+        let mut offsets: HashMap<usize, u64> = HashMap::new();
+        for (i, value) in v.iter().enumerate() {
+            offsets.insert(i, value.clone());
+        }
         AtomicFileMetaData {
             chunks_count,
             chunk_size,
-            offsets: HashMap::new(),
+            offsets,
         }
     }
     pub fn set_progress(&mut self, key: usize, offset: u64) {
         self.offsets.insert(key, offset);
     }
-
+    pub fn get_progress(&self, key: usize) -> Option<u64> {
+        self.offsets.get(&key).map(|d| d.clone())
+    }
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
         let encoded: Vec<u8> = bincode::serialize(&self)?;
         let data_length = encoded.len() as u64;

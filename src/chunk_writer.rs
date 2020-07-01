@@ -8,10 +8,8 @@ pub struct ChunkWriter {
 }
 
 impl ChunkWriter {
-    pub fn write(&mut self, done_offset: u64, buf: &[u8]) {
-        let next_offset = self.offset + done_offset;
-        self.file.write(self.offset, buf, self.key, next_offset);
-        self.offset = next_offset
+    pub fn write(mut self, done_offset: u64, buf: &[u8]) {
+        unimplemented!()
     }
 }
 // impl Deref for ChunkWriter {}
