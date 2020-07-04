@@ -37,6 +37,7 @@ pub struct AtomicFile {
 }
 
 impl AtomicFile {
+    // todo give the consumer the cursor at which the last write occurred
     fn new(file: File) -> AtomicFile {
         let (tx, rx) = mpsc::channel();
         AtomicFile {
@@ -95,6 +96,16 @@ impl AtomicFile {
         let file = self.source;
         Ok(file)
     }
+    pub fn clear_progress(self) -> Result<File, Error> {
+        let meta_data = self
+            .get_meta_data()?
+            .ok_or_else(|| Error::NotInitialed)?
+            .encode()?
+            .len();
+        let source = self.source;
+        source.set_len(source.metadata()?.len() - meta_data as u64)?;
+        Ok(source)
+    }
     pub fn get_encoded_meta_data(&self) -> Result<Vec<u8>, Error> {
         let guard = self.meta_data.read().map_err(|_| Error::PoisonError)?;
         if let Some(meta_data) = guard.as_ref() {
@@ -144,6 +155,23 @@ impl AtomicFile {
             Ok(())
         } else {
             unreachable!("Meta data should be exists if we reached the write step")
+        }
+    }
+    fn get_written_bytes(&self) -> Result<u64, Error> {
+        let mut progress: u64 = 0;
+        if let Some(meta) = self.get_meta_data()? {
+            for (_, offset) in meta.offsets {
+                progress += offset;
+            }
+        }
+        Ok(progress)
+    }
+    fn get_chunk_progress(&self, index: usize) -> Result<u64, Error> {
+        if let Some(meta) = self.get_meta_data()? {
+            let p = meta.offsets.get(&index).ok_or(Error::FileOverFlow)?;
+            Ok(*p)
+        } else {
+            Err(Error::NotInitialed)
         }
     }
     pub fn get_chunk_writer(&self) -> mpsc::Sender<Chunk> {
